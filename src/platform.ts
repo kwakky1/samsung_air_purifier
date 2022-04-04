@@ -1,116 +1,150 @@
-import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, Service, Characteristic } from 'homebridge';
+import {
+  API,
+  DynamicPlatformPlugin,
+  Logger,
+  PlatformAccessory,
+  PlatformConfig,
+  Service,
+  Characteristic,
+  UnknownContext,
+} from 'homebridge';
 
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
-import { ExamplePlatformAccessory } from './platformAccessory';
+import { SmartThingsAirPurifierAccessory } from './platformAccessory';
+import {
+  BearerTokenAuthenticator,
+  Device,
+  Component,
+  CapabilityReference,
+  SmartThingsClient,
+} from '@smartthings/core-sdk';
+import { DeviceAdapter } from './deviceAdapter';
 
-/**
- * HomebridgePlatform
- * This class is the main constructor for your plugin, this is where you should
- * parse the user config and discover/register accessories with Homebridge.
- */
-export class ExampleHomebridgePlatform implements DynamicPlatformPlugin {
+export class SmartThingsPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service = this.api.hap.Service;
-  public readonly Characteristic: typeof Characteristic = this.api.hap.Characteristic;
+  public readonly Characteristic: typeof Characteristic =
+    this.api.hap.Characteristic;
 
-  // this is used to track restored cached accessories
-  public readonly accessories: PlatformAccessory[] = [];
+  private readonly accessories: PlatformAccessory[] = [];
+  private readonly client: SmartThingsClient;
 
   constructor(
     public readonly log: Logger,
     public readonly config: PlatformConfig,
     public readonly api: API,
   ) {
-    this.log.debug('Finished initializing platform:', this.config.name);
+    const token = this.config.token as string;
+    this.client = new SmartThingsClient(new BearerTokenAuthenticator(token));
 
-    // When this event is fired it means Homebridge has restored all cached accessories from disk.
-    // Dynamic Platform plugins should only register new accessories after this event was fired,
-    // in order to ensure they weren't added to homebridge already. This event can also be used
-    // to start discovery of new accessories.
-    this.api.on('didFinishLaunching', () => {
-      log.debug('Executed didFinishLaunching callback');
-      // run the method to discover / register your devices as accessories
-      this.discoverDevices();
-    });
+    if (token?.trim()) {
+      this.log.debug('Loading devices with token:', token);
+
+      this.api.on('didFinishLaunching', () => {
+        this.client.devices
+          .list()
+          .then((devices: Device[]) => this.handleDevices(devices))
+          .catch((err) => log.error('Cannot load devices', err));
+      });
+    } else {
+      this.log.warn('Please congigure your API token and restart homebridge.');
+    }
   }
 
-  /**
-   * This function is invoked when homebridge restores cached accessories from disk at startup.
-   * It should be used to setup event handlers for characteristics and update respective values.
-   */
+  private handleDevices(devices: Device[]) {
+    for (const device of devices) {
+      if (device.components) {
+        const capabilities = SmartThingsPlatform.getCapabilities(device);
+        const missingCapabilities = this.getMissingCapabilities(capabilities);
+
+        if (device.deviceId && missingCapabilities.length === 0) {
+          this.log.info('Registering device', device.deviceId);
+          this.handleSupportedDevice(device);
+        } else {
+          this.log.info(
+            'Skipping device',
+            device.deviceId,
+            device.label,
+            'Missing capabilities',
+            missingCapabilities,
+          );
+        }
+      }
+    }
+  }
+
+  private getMissingCapabilities(capabilities: string[]): string[] {
+    return SmartThingsAirPurifierAccessory.requiredCapabilities.filter(
+      (el) => !capabilities.includes(el),
+    );
+  }
+
+  private handleSupportedDevice(device: Device) {
+    const existingAccessory = this.accessories.find(
+      (accessory) => accessory.UUID === device.deviceId,
+    );
+    if (existingAccessory) {
+      this.handleExistingDevice(device, existingAccessory);
+    } else {
+      this.handleNewDevice(device);
+    }
+  }
+
+  private static getCapabilities(device: Device) {
+    return (
+      device.components
+        ?.flatMap((component: Component) => {
+          return component.capabilities;
+        })
+        .map(
+          (capabilityReference: CapabilityReference) => capabilityReference.id,
+        ) ?? []
+    );
+  }
+
+  private handleExistingDevice(
+    device: Device,
+    accessory: PlatformAccessory<UnknownContext>,
+  ) {
+    this.log.info('Restoring existing accessory from cache:', device.label);
+    this.createSmartThingsAccessory(accessory, device);
+  }
+
+  private handleNewDevice(device: Device) {
+    this.log.info('Adding new accessory:', device.label);
+    const accessory = this.createPlatformAccessory(device);
+
+    this.createSmartThingsAccessory(accessory, device);
+    this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [
+      accessory,
+    ]);
+  }
+
+  private createPlatformAccessory(
+    device: Device,
+  ): PlatformAccessory<UnknownContext> {
+    if (device.label && device.deviceId) {
+      const accessory = new this.api.platformAccessory(
+        device.label,
+        device.deviceId,
+      );
+      accessory.context.device = device;
+      return accessory;
+    }
+
+    throw new Error('Missing label and id.');
+  }
+
+  private createSmartThingsAccessory(
+    accessory: PlatformAccessory<UnknownContext>,
+    device: Device,
+  ) {
+    const deviceAdapter = new DeviceAdapter(device, this.log, this.client);
+    new SmartThingsAirPurifierAccessory(this, accessory, deviceAdapter);
+  }
+
   configureAccessory(accessory: PlatformAccessory) {
     this.log.info('Loading accessory from cache:', accessory.displayName);
 
-    // add the restored accessory to the accessories cache so we can track if it has already been registered
     this.accessories.push(accessory);
-  }
-
-  /**
-   * This is an example method showing how to register discovered accessories.
-   * Accessories must only be registered once, previously created accessories
-   * must not be registered again to prevent "duplicate UUID" errors.
-   */
-  discoverDevices() {
-
-    // EXAMPLE ONLY
-    // A real plugin you would discover accessories from the local network, cloud services
-    // or a user-defined array in the platform config.
-    const exampleDevices = [
-      {
-        exampleUniqueId: 'ABCD',
-        exampleDisplayName: 'Bedroom',
-      },
-      {
-        exampleUniqueId: 'EFGH',
-        exampleDisplayName: 'Kitchen',
-      },
-    ];
-
-    // loop over the discovered devices and register each one if it has not already been registered
-    for (const device of exampleDevices) {
-
-      // generate a unique id for the accessory this should be generated from
-      // something globally unique, but constant, for example, the device serial
-      // number or MAC address
-      const uuid = this.api.hap.uuid.generate(device.exampleUniqueId);
-
-      // see if an accessory with the same uuid has already been registered and restored from
-      // the cached devices we stored in the `configureAccessory` method above
-      const existingAccessory = this.accessories.find(accessory => accessory.UUID === uuid);
-
-      if (existingAccessory) {
-        // the accessory already exists
-        this.log.info('Restoring existing accessory from cache:', existingAccessory.displayName);
-
-        // if you need to update the accessory.context then you should run `api.updatePlatformAccessories`. eg.:
-        // existingAccessory.context.device = device;
-        // this.api.updatePlatformAccessories([existingAccessory]);
-
-        // create the accessory handler for the restored accessory
-        // this is imported from `platformAccessory.ts`
-        new ExamplePlatformAccessory(this, existingAccessory);
-
-        // it is possible to remove platform accessories at any time using `api.unregisterPlatformAccessories`, eg.:
-        // remove platform accessories when no longer present
-        // this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [existingAccessory]);
-        // this.log.info('Removing existing accessory from cache:', existingAccessory.displayName);
-      } else {
-        // the accessory does not yet exist, so we need to create it
-        this.log.info('Adding new accessory:', device.exampleDisplayName);
-
-        // create a new accessory
-        const accessory = new this.api.platformAccessory(device.exampleDisplayName, uuid);
-
-        // store a copy of the device object in the `accessory.context`
-        // the `context` property can be used to store any data about the accessory you may need
-        accessory.context.device = device;
-
-        // create the accessory handler for the newly create accessory
-        // this is imported from `platformAccessory.ts`
-        new ExamplePlatformAccessory(this, accessory);
-
-        // link the accessory to your platform
-        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-      }
-    }
   }
 }
