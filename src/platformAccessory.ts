@@ -1,6 +1,5 @@
 import {
   AccessoryPlugin,
-  Characteristic,
   CharacteristicValue,
   PlatformAccessory,
   Service,
@@ -131,10 +130,12 @@ export class SmartThingsAirPurifierAccessory implements AccessoryPlugin {
   }
 
   private getAirQuality(): CharacteristicValue {
-    return this.checkAirQuality(this.deviceStatus.airQuality);
+    return SmartThingsAirPurifierAccessory.checkAirQuality(
+      this.deviceStatus.airQuality,
+    );
   }
 
-  private checkAirQuality(state: number): CharacteristicValue {
+  private static checkAirQuality(state: number): CharacteristicValue {
     if (state <= 1) {
       return 1; // Return EXCELLENT
     } else if (state > 1 && state <= 2) {
