@@ -16,9 +16,9 @@ export const retry = (
       .catch((reason) =>
         retries > 0
           ? wait(delay)
-              .then(retry.bind(null, task, delay, retries - 1))
-              .then(resolve)
-              .catch(reject)
+            .then(retry.bind(null, task, delay, retries - 1))
+            .then(resolve)
+            .catch(reject)
           : reject(reason),
       ),
   );

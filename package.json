@@ -1,5 +1,4 @@
 {
-  "private": true,
   "displayName": "Samsung Air Purifier",
   "name": "homebridge-samsung-air-purifier",
   "version": "1.0.0",
