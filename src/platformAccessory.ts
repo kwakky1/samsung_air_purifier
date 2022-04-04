@@ -123,9 +123,9 @@ export class SmartThingsAirPurifierAccessory implements AccessoryPlugin {
 
   private handleCurrentAirPurifierState(): CharacteristicValue {
     if (this.deviceStatus.active) {
-      return 1;
+      return this.platform.Characteristic.CurrentAirPurifierState.PURIFYING_AIR;
     } else {
-      return 0;
+      return this.platform.Characteristic.CurrentAirPurifierState.INACTIVE;
     }
   }
 
