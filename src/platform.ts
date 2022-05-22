@@ -10,15 +10,18 @@ import {
 } from 'homebridge';
 
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
-import { SmartThingsAirPurifierAccessory } from './platformAccessory';
+import { AirPurifier } from './device/AirPurifier';
 import {
   BearerTokenAuthenticator,
   Device,
   Component,
   CapabilityReference,
   SmartThingsClient,
+  DeviceCategory,
 } from '@smartthings/core-sdk';
-import { DeviceAdapter } from './deviceAdapter';
+import { DeviceAdapter } from './deviceStatus/deviceAdapter';
+import { AirConditionerAdapter } from './deviceStatus/airConditioner';
+import { AirConditioner } from './device/AirConditioner';
 
 export class SmartThingsPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service = this.api.hap.Service;
@@ -54,9 +57,17 @@ export class SmartThingsPlatform implements DynamicPlatformPlugin {
     for (const device of devices) {
       if (device.components) {
         const capabilities = SmartThingsPlatform.getCapabilities(device);
-        const missingCapabilities = this.getMissingCapabilities(capabilities);
+        const categories = SmartThingsPlatform.getCategories(device);
+        const missingCapabilities = this.getMissingCapabilities(
+          device,
+          capabilities,
+        ); // 카테고리로 분류, 공기청정기인지 에어컨인지
 
-        if (device.deviceId && missingCapabilities.length === 0) {
+        const possible = ['AirConditioner', 'AirPurifier'];
+        const confirm = categories.filter((categories) =>
+          possible.includes(categories),
+        );
+        if (device.deviceId && confirm.length !== 0) {
           this.log.info('Registering device', device.deviceId);
           this.handleSupportedDevice(device);
         } else {
@@ -64,7 +75,7 @@ export class SmartThingsPlatform implements DynamicPlatformPlugin {
             'Skipping device',
             device.deviceId,
             device.label,
-            'Missing capabilities',
+            'Missing categories',
             missingCapabilities,
           );
         }
@@ -72,11 +83,25 @@ export class SmartThingsPlatform implements DynamicPlatformPlugin {
     }
   }
 
-  private getMissingCapabilities(capabilities: string[]): string[] {
-    return SmartThingsAirPurifierAccessory.requiredCapabilities.filter(
-      (el) => !capabilities.includes(el),
-    );
+  private getMissingCapabilities(
+    device: Device,
+    capabilities: string[],
+  ): string[] {
+    const categories = SmartThingsPlatform.getCategories(device)[0];
+    switch (categories) {
+      case 'AirPurifier':
+        return AirPurifier.requiredCapabilities.filter(
+          (el) => !capabilities.includes(el),
+        );
+      case 'AirConditioner':
+        return AirConditioner.requiredCapabilities.filter(
+          (el) => !capabilities.includes(el),
+        );
+      default:
+        return ['out of acceptable categories'];
+    }
   }
+  // 현재 있는 device 인지 아니면 새로운 device 인지 확인
 
   private handleSupportedDevice(device: Device) {
     const existingAccessory = this.accessories.find(
@@ -98,6 +123,17 @@ export class SmartThingsPlatform implements DynamicPlatformPlugin {
         .map(
           (capabilityReference: CapabilityReference) => capabilityReference.id,
         ) ?? []
+    );
+  }
+
+  private static getCategories(device: Device) {
+    return (
+      device.components
+        ?.flatMap((component: Component) => {
+          return component.categories;
+        })
+        .map((categoryReference: DeviceCategory) => categoryReference.name) ??
+      []
     );
   }
 
@@ -138,8 +174,22 @@ export class SmartThingsPlatform implements DynamicPlatformPlugin {
     accessory: PlatformAccessory<UnknownContext>,
     device: Device,
   ) {
+    const categories = SmartThingsPlatform.getCategories(device)[0];
+
+    const airConditionerAdapter = new AirConditionerAdapter(
+      device,
+      this.log,
+      this.client,
+    );
+
     const deviceAdapter = new DeviceAdapter(device, this.log, this.client);
-    new SmartThingsAirPurifierAccessory(this, accessory, deviceAdapter);
+    switch (categories) {
+      case 'AirConditioner':
+        new AirConditioner(this, accessory, airConditionerAdapter);
+        break;
+      case 'AirPurifier':
+        new AirPurifier(this, accessory, deviceAdapter);
+    }
   }
 
   configureAccessory(accessory: PlatformAccessory) {

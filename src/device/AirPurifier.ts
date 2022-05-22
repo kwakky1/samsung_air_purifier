@@ -4,10 +4,13 @@ import {
   PlatformAccessory,
   Service,
 } from 'homebridge';
-import { SmartThingsPlatform } from './platform';
-import { DeviceAdapter, PlatformStatusInfo } from './deviceAdapter';
+import { SmartThingsPlatform } from '../platform';
+import {
+  DeviceAdapter,
+  PlatformStatusInfo,
+} from '../deviceStatus/deviceAdapter';
 import { Device } from '@smartthings/core-sdk';
-import { isDefined } from './utils';
+import { isDefined } from '../utils';
 
 /**
  * Platform Accessory
@@ -17,7 +20,7 @@ import { isDefined } from './utils';
 
 const defaultUpdateInterval = 15;
 
-export class SmartThingsAirPurifierAccessory implements AccessoryPlugin {
+export class AirPurifier implements AccessoryPlugin {
   private airPurifierService?: Service;
   private accessoryInformationService?: Service;
   private airQualitySensorService?: Service;
@@ -130,9 +133,7 @@ export class SmartThingsAirPurifierAccessory implements AccessoryPlugin {
   }
 
   private getAirQuality(): CharacteristicValue {
-    return SmartThingsAirPurifierAccessory.checkAirQuality(
-      this.deviceStatus.airQuality,
-    );
+    return AirPurifier.checkAirQuality(this.deviceStatus.airQuality);
   }
 
   private static checkAirQuality(state: number): CharacteristicValue {
@@ -157,7 +158,7 @@ export class SmartThingsAirPurifierAccessory implements AccessoryPlugin {
     } catch (error: unknown) {
       this.platform.log.error(
         'Error while fetching device status: ' +
-          SmartThingsAirPurifierAccessory.getErrorMessage(error),
+          AirPurifier.getErrorMessage(error),
       );
       this.platform.log.debug('Caught error', error);
     }
