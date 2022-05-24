@@ -1,15 +1,15 @@
 {
-  "displayName": "Samsung Air Purifier",
-  "name": "homebridge-samsung-air-purifier",
-  "version": "1.0.1",
-  "description": "A short description about what your plugin does.",
+  "displayName": "Smartthings Samsung Electronics",
+  "name": "homebridge-smartthings-samsung-electronics",
+  "version": "1.0.0",
+  "description": "A Homebridge plugin for controlling/monitoring Samsung Electronics via their Smartthings platform.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/kwakky1/samsung_air_purifier"
+    "url": "https://github.com/kwakky1/smarttings_samsung_electronics"
   },
   "bugs": {
-    "url": "https://github.com/kwakky1/samsung_air_purifier/issues"
+    "url": "https://github.com/kwakky1/smarttings_samsung_electronics/issues"
   },
   "engines": {
     "node": ">=14.18.1",
