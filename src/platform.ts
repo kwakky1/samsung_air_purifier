@@ -1,200 +1,216 @@
 import {
   API,
+  Characteristic,
   DynamicPlatformPlugin,
   Logger,
   PlatformAccessory,
   PlatformConfig,
   Service,
-  Characteristic,
-  UnknownContext,
 } from 'homebridge';
 
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
-import { AirPurifier } from './device/AirPurifier';
 import {
-  BearerTokenAuthenticator,
-  Device,
-  Component,
-  CapabilityReference,
-  SmartThingsClient,
-  DeviceCategory,
-} from '@smartthings/core-sdk';
-import { DeviceAdapter } from './deviceStatus/deviceAdapter';
-import { AirConditionerAdapter } from './deviceStatus/airConditioner';
-import { AirConditioner } from './device/AirConditioner';
+  AirPurifier,
+  AirPurifierDeviceConfig,
+  AirQualityMapping,
+} from './device/AirPurifier';
+import { AirPurifierAdapter } from './deviceStatus/airPurifierAdapter';
+import { HAClient } from './haClient';
 
-export class SmartThingsPlatform implements DynamicPlatformPlugin {
+const DEFAULT_UPDATE_INTERVAL_SECS = 15;
+const DEFAULT_AUTO_PRESET = 'smart';
+const DEFAULT_MANUAL_PRESETS = ['sleep', 'windfree', 'max'];
+const DEFAULT_AIR_QUALITY_MAPPING: AirQualityMapping = [1, 2, 4, 5];
+
+// Home Assistant entity ids are always "<domain>.<object_id>", e.g. "fan.living_room".
+const ENTITY_ID_PATTERN = /^[a-z0-9_]+\.[a-z0-9_]+$/;
+
+interface RawAirPurifierDeviceConfig {
+  name?: string;
+  fanEntity?: string;
+  autoPreset?: string;
+  manualPresets?: string[];
+  airQualityEntity?: string;
+  pm25Entity?: string;
+  pm10Entity?: string;
+  airQualityMapping?: AirQualityMapping;
+}
+
+export class HomeAssistantPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service = this.api.hap.Service;
   public readonly Characteristic: typeof Characteristic =
     this.api.hap.Characteristic;
 
   private readonly accessories: PlatformAccessory[] = [];
-  private readonly client: SmartThingsClient;
+  private client?: HAClient;
 
   constructor(
     public readonly log: Logger,
     public readonly config: PlatformConfig,
     public readonly api: API,
   ) {
-    const token = this.config.token as string;
-    this.client = new SmartThingsClient(new BearerTokenAuthenticator(token));
-
-    if (token?.trim()) {
-      this.log.debug('Loading devices with token:', token);
-
-      this.api.on('didFinishLaunching', () => {
-        this.client.devices
-          .list()
-          .then((devices: Device[]) => this.handleDevices(devices))
-          .catch((err) => log.error('Cannot load devices', err));
-      });
-    } else {
-      this.log.warn('Please congigure your API token and restart homebridge.');
-    }
+    this.api.on('didFinishLaunching', () => this.discoverDevices());
   }
 
-  private handleDevices(devices: Device[]) {
-    for (const device of devices) {
-      if (device.components) {
-        const capabilities = SmartThingsPlatform.getCapabilities(device);
-        const categories = SmartThingsPlatform.getCategories(device);
-        const missingCapabilities = this.getMissingCapabilities(
-          device,
-          capabilities,
-        ); // 카테고리로 분류, 공기청정기인지 에어컨인지
+  configureAccessory(accessory: PlatformAccessory): void {
+    this.log.info('Loading accessory from cache:', accessory.displayName);
+    this.accessories.push(accessory);
+  }
 
-        const possible = ['AirConditioner', 'AirPurifier'];
-        const confirm = categories.filter((categories) =>
-          possible.includes(categories),
-        );
-        if (device.deviceId && confirm.length !== 0) {
-          this.log.info('Registering device', device.deviceId);
-          this.handleSupportedDevice(device);
-        } else {
-          this.log.info(
-            'Skipping device',
-            device.deviceId,
-            device.label,
-            'Missing categories',
-            missingCapabilities,
-          );
-        }
+  private discoverDevices(): void {
+    const haUrl = this.config.haUrl as string | undefined;
+    const haToken = this.config.haToken as string | undefined;
+
+    if (!haUrl?.trim()) {
+      this.log.error(
+        'Missing "haUrl" in config. Set it to your Home Assistant base URL, e.g. http://homeassistant.local:8123',
+      );
+      return;
+    }
+    if (!haToken?.trim()) {
+      this.log.error(
+        'Missing "haToken" in config. Create a long-lived access token in Home Assistant and set it here.',
+      );
+      return;
+    }
+
+    const rawDevices =
+      (this.config.devices as RawAirPurifierDeviceConfig[] | undefined) ?? [];
+    if (rawDevices.length === 0) {
+      this.log.warn('No devices configured under "devices". Nothing to register.');
+    }
+
+    const updateIntervalSecs =
+      (this.config.updateInterval as number | undefined) ??
+      DEFAULT_UPDATE_INTERVAL_SECS;
+
+    this.client = new HAClient({
+      url: haUrl,
+      token: haToken,
+      log: this.log,
+      pollIntervalMs: updateIntervalSecs * 1000,
+    });
+
+    const configuredUuids = new Set<string>();
+
+    for (const raw of rawDevices) {
+      const deviceConfig = this.resolveDeviceConfig(raw);
+      if (!deviceConfig) {
+        continue;
+      }
+
+      const uuid = this.api.hap.uuid.generate(deviceConfig.fanEntity);
+      configuredUuids.add(uuid);
+      this.registerAirPurifier(uuid, deviceConfig);
+    }
+
+    this.removeStaleAccessories(configuredUuids);
+  }
+
+  private resolveDeviceConfig(
+    raw: RawAirPurifierDeviceConfig,
+  ): AirPurifierDeviceConfig | undefined {
+    const deviceName = raw.name ?? raw.fanEntity ?? 'unnamed device';
+
+    if (!raw.fanEntity || !ENTITY_ID_PATTERN.test(raw.fanEntity)) {
+      this.log.error(
+        `Device "${deviceName}" has an invalid or missing "fanEntity" (expected an entity id like "fan.my_purifier"). Skipping.`,
+      );
+      return undefined;
+    }
+    if (!raw.fanEntity.startsWith('fan.')) {
+      this.log.warn(
+        `Device "${deviceName}" fanEntity "${raw.fanEntity}" does not look like a fan entity (expected "fan.<name>").`,
+      );
+    }
+
+    return {
+      name: deviceName,
+      fanEntity: raw.fanEntity,
+      autoPreset: raw.autoPreset ?? DEFAULT_AUTO_PRESET,
+      manualPresets:
+        raw.manualPresets && raw.manualPresets.length > 0
+          ? raw.manualPresets
+          : DEFAULT_MANUAL_PRESETS,
+      airQualityEntity: this.validateOptionalEntity(
+        raw.airQualityEntity,
+        'airQualityEntity',
+        deviceName,
+      ),
+      pm25Entity: this.validateOptionalEntity(
+        raw.pm25Entity,
+        'pm25Entity',
+        deviceName,
+      ),
+      pm10Entity: this.validateOptionalEntity(
+        raw.pm10Entity,
+        'pm10Entity',
+        deviceName,
+      ),
+      airQualityMapping: raw.airQualityMapping ?? DEFAULT_AIR_QUALITY_MAPPING,
+    };
+  }
+
+  private validateOptionalEntity(
+    value: string | undefined,
+    key: string,
+    deviceName: string,
+  ): string | undefined {
+    if (value === undefined) {
+      return undefined;
+    }
+    if (!ENTITY_ID_PATTERN.test(value)) {
+      this.log.error(
+        `Device "${deviceName}" has an invalid "${key}": "${value}". Ignoring this sensor.`,
+      );
+      return undefined;
+    }
+    return value;
+  }
+
+  private registerAirPurifier(
+    uuid: string,
+    deviceConfig: AirPurifierDeviceConfig,
+  ): void {
+    const existing = this.accessories.find(
+      (accessory) => accessory.UUID === uuid,
+    );
+    const accessory =
+      existing ?? new this.api.platformAccessory(deviceConfig.name, uuid);
+
+    if (existing) {
+      this.log.info('Restoring existing accessory from cache:', deviceConfig.name);
+    } else {
+      this.log.info('Adding new accessory:', deviceConfig.name);
+      this.accessories.push(accessory);
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [
+        accessory,
+      ]);
+    }
+
+    // discoverDevices() always creates the client before calling this method.
+    const adapter = new AirPurifierAdapter(this.client as HAClient, deviceConfig, this.log);
+    new AirPurifier(this, accessory, adapter, deviceConfig);
+  }
+
+  private removeStaleAccessories(configuredUuids: Set<string>): void {
+    const stale = this.accessories.filter(
+      (accessory) => !configuredUuids.has(accessory.UUID),
+    );
+    if (stale.length === 0) {
+      return;
+    }
+
+    this.log.info(
+      'Removing accessories no longer present in config:',
+      stale.map((accessory) => accessory.displayName),
+    );
+    this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
+    for (const accessory of stale) {
+      const index = this.accessories.indexOf(accessory);
+      if (index !== -1) {
+        this.accessories.splice(index, 1);
       }
     }
-  }
-
-  private getMissingCapabilities(
-    device: Device,
-    capabilities: string[],
-  ): string[] {
-    const categories = SmartThingsPlatform.getCategories(device)[0];
-    switch (categories) {
-      case 'AirPurifier':
-        return AirPurifier.requiredCapabilities.filter(
-          (el) => !capabilities.includes(el),
-        );
-      case 'AirConditioner':
-        return AirConditioner.requiredCapabilities.filter(
-          (el) => !capabilities.includes(el),
-        );
-      default:
-        return ['out of acceptable categories'];
-    }
-  }
-  // 현재 있는 device 인지 아니면 새로운 device 인지 확인
-
-  private handleSupportedDevice(device: Device) {
-    const existingAccessory = this.accessories.find(
-      (accessory) => accessory.UUID === device.deviceId,
-    );
-    if (existingAccessory) {
-      this.handleExistingDevice(device, existingAccessory);
-    } else {
-      this.handleNewDevice(device);
-    }
-  }
-
-  private static getCapabilities(device: Device) {
-    return (
-      device.components
-        ?.flatMap((component: Component) => {
-          return component.capabilities;
-        })
-        .map(
-          (capabilityReference: CapabilityReference) => capabilityReference.id,
-        ) ?? []
-    );
-  }
-
-  private static getCategories(device: Device) {
-    return (
-      device.components
-        ?.flatMap((component: Component) => {
-          return component.categories;
-        })
-        .map((categoryReference: DeviceCategory) => categoryReference.name) ??
-      []
-    );
-  }
-
-  private handleExistingDevice(
-    device: Device,
-    accessory: PlatformAccessory<UnknownContext>,
-  ) {
-    this.log.info('Restoring existing accessory from cache:', device.label);
-    this.createSmartThingsAccessory(accessory, device);
-  }
-
-  private handleNewDevice(device: Device) {
-    this.log.info('Adding new accessory:', device.label);
-    const accessory = this.createPlatformAccessory(device);
-
-    this.createSmartThingsAccessory(accessory, device);
-    this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [
-      accessory,
-    ]);
-  }
-
-  private createPlatformAccessory(
-    device: Device,
-  ): PlatformAccessory<UnknownContext> {
-    if (device.label && device.deviceId) {
-      const accessory = new this.api.platformAccessory(
-        device.label,
-        device.deviceId,
-      );
-      accessory.context.device = device;
-      return accessory;
-    }
-
-    throw new Error('Missing label and id.');
-  }
-
-  private createSmartThingsAccessory(
-    accessory: PlatformAccessory<UnknownContext>,
-    device: Device,
-  ) {
-    const categories = SmartThingsPlatform.getCategories(device)[0];
-
-    const airConditionerAdapter = new AirConditionerAdapter(
-      device,
-      this.log,
-      this.client,
-    );
-
-    const deviceAdapter = new DeviceAdapter(device, this.log, this.client);
-    switch (categories) {
-      case 'AirConditioner':
-        new AirConditioner(this, accessory, airConditionerAdapter);
-        break;
-      case 'AirPurifier':
-        new AirPurifier(this, accessory, deviceAdapter);
-    }
-  }
-
-  configureAccessory(accessory: PlatformAccessory) {
-    this.log.info('Loading accessory from cache:', accessory.displayName);
-
-    this.accessories.push(accessory);
   }
 }

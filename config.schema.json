@@ -1,22 +1,96 @@
 {
-  "pluginAlias": "SamsungAirPurifier",
+  "pluginAlias": "HomeAssistantAirPurifier",
   "pluginType": "platform",
   "singular": true,
   "schema": {
     "type": "object",
     "properties": {
-      "name": {
-        "title": "Name",
+      "haUrl": {
+        "title": "Home Assistant URL",
         "type": "string",
         "required": true,
-        "default": "Air Purifier",
-        "placeholder": "Air Purifier"
+        "placeholder": "http://homeassistant.local:8123",
+        "description": "The local base URL of your Home Assistant instance."
       },
-      "token": {
-        "title": "API Token",
+      "haToken": {
+        "title": "Long-Lived Access Token",
         "type": "string",
         "required": true,
-        "default": ""
+        "description": "Create one under your Home Assistant profile's 'Long-Lived Access Tokens' section."
+      },
+      "updateInterval": {
+        "title": "Polling Fallback Interval (seconds)",
+        "type": "integer",
+        "required": false,
+        "default": 15,
+        "minimum": 5,
+        "description": "How often to poll over REST when the WebSocket connection is down."
+      },
+      "devices": {
+        "title": "Air Purifiers",
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "title": "Name",
+              "type": "string",
+              "required": true,
+              "placeholder": "공기청정기"
+            },
+            "fanEntity": {
+              "title": "Fan Entity ID",
+              "type": "string",
+              "required": true,
+              "placeholder": "fan.samsung_air_purifier_a_vtww_tp2_21_common",
+              "description": "The Home Assistant fan entity that supports preset_mode."
+            },
+            "autoPreset": {
+              "title": "Auto Preset",
+              "type": "string",
+              "default": "smart",
+              "description": "The preset_mode mapped to HomeKit's AUTO target state (not shown on the slider)."
+            },
+            "manualPresets": {
+              "title": "Manual Presets (weak → strong)",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": ["sleep", "windfree", "max"],
+              "description": "The remaining preset_modes, mapped in order onto the RotationSpeed slider."
+            },
+            "airQualityEntity": {
+              "title": "Air Quality Sensor Entity ID",
+              "type": "string",
+              "placeholder": "sensor.samsung_air_purifier_a_vtww_tp2_21_common_clean_level",
+              "description": "A sensor reporting a 1 (best) to 4 (worst) clean-air level."
+            },
+            "pm25Entity": {
+              "title": "PM2.5 Sensor Entity ID",
+              "type": "string",
+              "placeholder": "sensor.gonggiceongjeonggi_rokeol_pm2_5"
+            },
+            "pm10Entity": {
+              "title": "PM10 Sensor Entity ID",
+              "type": "string",
+              "placeholder": "sensor.gonggiceongjeonggi_rokeol_pm10"
+            },
+            "airQualityMapping": {
+              "title": "Air Quality Mapping",
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5
+              },
+              "minItems": 4,
+              "maxItems": 4,
+              "default": [1, 2, 4, 5],
+              "description": "HomeKit AirQuality (1 EXCELLENT – 5 POOR) for clean-air levels 1, 2, 3 and 4 respectively."
+            }
+          }
+        }
       }
     }
   }
